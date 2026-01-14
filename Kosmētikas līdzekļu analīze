@@ -1,0 +1,122 @@
+
+
+
+!pip install gradio pytesseract pillow
+!apt-get install -y tesseract-ocr
+
+import gradio as gr
+from PIL import Image
+import pytesseract
+
+
+
+
+ingredient_db = {
+    "retinol": {"inci":"Retinol", "risks":["pregnancy"], "severity":5, "source":["SCCS","EU CosIng"]},
+    "retinyl palmitate": {"inci":"Retinyl Palmitate","risks":["pregnancy"],"severity":5,"source":["SCCS"]},
+    "tretinoin": {"inci":"Tretinoin","risks":["pregnancy"],"severity":5,"source":["SCCS"]},
+    "salicylic acid":{"inci":"Salicylic Acid","risks":["pregnancy","irritant"],"severity":4,"source":["SCCS"]},
+    "fragrance":{"inci":"Parfum","risks":["allergen","irritant"],"severity":3,"source":["IFRA","EWG"]},
+    "limonene":{"inci":"Limonene","risks":["allergen"],"severity":3,"source":["IFRA"]},
+    "linalool":{"inci":"Linalool","risks":["allergen"],"severity":3,"source":["IFRA"]},
+    "citronellol":{"inci":"Citronellol","risks":["allergen"],"severity":3,"source":["IFRA"]},
+    "benzyl alcohol":{"inci":"Benzyl Alcohol","risks":["allergen","irritant"],"severity":3,"source":["IFRA","EU CosIng"]},
+    "sodium lauryl sulfate":{"inci":"Sodium Lauryl Sulfate","risks":["irritant"],"severity":3,"source":["EWG"]},
+    "alcohol denat":{"inci":"Alcohol Denat.","risks":["irritant"],"severity":3,"source":["EWG"]},
+    "phenoxyethanol":{"inci":"Phenoxyethanol","risks":["irritant"],"severity":2,"source":["EU CosIng"]},
+    "chlorphenesin":{"inci":"Chlorphenesin","risks":["irritant"],"severity":2,"source":["EU CosIng"]},
+    "water":{"inci":"Aqua","risks":[],"severity":0,"source":["EU CosIng"]},
+    "glycerin":{"inci":"Glycerin","risks":[],"severity":0,"source":["EU CosIng"]},
+    "niacinamide":{"inci":"Niacinamide","risks":[],"severity":0,"source":["EU CosIng"]},
+    "panthenol":{"inci":"Panthenol","risks":[],"severity":0,"source":["EU CosIng"]},
+    "hyaluronic acid":{"inci":"Hyaluronic Acid","risks":[],"severity":0,"source":["EU CosIng"]},
+    "citric acid":{"inci":"Citric Acid","risks":["irritant"],"severity":1,"source":["EU CosIng"]},
+    "menthol":{"inci":"Menthol","risks":["irritant"],"severity":2,"source":["EWG"]},
+    "camphor":{"inci":"Camphor","risks":["irritant"],"severity":2,"source":["EWG"]},
+    "eucalyptus oil":{"inci":"Eucalyptus Globulus Leaf Oil","risks":["irritant"],"severity":2,"source":["EWG"]},
+    "tea tree oil":{"inci":"Melaleuca Alternifolia Leaf Oil","risks":["allergen","irritant"],"severity":2,"source":["EWG"]}
+}
+
+inci_aliases = {
+    "aqua":"water",
+    "parfum":"fragrance",
+    "alcohol denat.":"alcohol denat",
+    "aloe barbadensis leaf juice":"aloe"
+}
+
+risk_weights = {"pregnancy":40,"allergen":25,"irritant":15}
+
+skin_modifiers = {
+    "sensitive":{"irritant":1.5,"allergen":1.3},
+    "normal":{},
+    "oily":{"irritant":1.2},
+    "dry":{"irritant":1.1},
+    "combination":{"irritant":1.3}
+}
+
+def parse_inci(text):
+    ingredients = [i.strip().lower() for i in text.replace("\n",",").split(",")]
+    ingredients = [i for i in ingredients if i]
+    normalized = [inci_aliases.get(i,i) for i in ingredients]
+    return normalized
+
+def calculate_risk(ingredients, skin_type="normal", pregnant=False, allergies=[]):
+    score = 100
+    issues = []
+    for ing in ingredients:
+        data = ingredient_db.get(ing)
+        if not data:
+            continue
+        for risk in data["risks"]:
+            weight = risk_weights.get(risk,0)
+            modifier = skin_modifiers.get(skin_type,{}).get(risk,1)
+            adjusted_weight = int(weight*modifier)
+            severity = "vidējs"
+            if ing in allergies:
+                severity = "augsts"
+                adjusted_weight += int(weight*0.5)
+            if risk=="pregnancy" and pregnant:
+                severity="augsts"
+            score -= adjusted_weight
+            issues.append({"ingredient":ing,"risk":risk,"severity":severity})
+    score = max(score,0)
+    return score, issues
+
+def analyze_product(input_text, skin_type, pregnant, allergy_text, input_image):
+    # Ja ir foto, iegūst tekstu
+    ocr_text = ""
+    if input_image is not None:
+        ocr_text = pytesseract.image_to_string(input_image)
+    product_text = input_text if input_text.strip() else ocr_text
+    parsed = parse_inci(product_text)
+    allergies = [a.strip().lower() for a in allergy_text.split(",") if a.strip()]
+    score, issues = calculate_risk(parsed, skin_type, pregnant, allergies)
+    
+    report = f"Izanalizētās sastāvdaļas: {parsed}\nTīrības rezultāts: {score}\nRiski:\n"
+    if not issues:
+        report += "  Nav konstatēti riski! ✅"
+    else:
+        for issue in issues:
+            report += f"  - Sastāvdaļa: {issue['ingredient']}, Risks: {issue['risk']}, Smagums: {issue['severity']}\n"
+    return report
+
+
+
+
+skin_options = ["normāla", "jutīga", "taukaina", "sausa", "kombinēta"]
+
+iface = gr.Interface(
+    fn=analyze_product,
+    inputs=[
+        gr.Textbox(label="Ievadiet produkta sastāvu (INCI)", lines=3, placeholder="Aqua, Glycerin, Retinol..."),
+        gr.Dropdown(skin_options, label="Ādas tips"),
+        gr.Checkbox(label="Vai lietotāja ir grūtniece?"),
+        gr.Textbox(label="Alergēni (atdalīti ar komatu)", lines=2, placeholder="fragrance, limonene"),
+        gr.Image(type="pil", label="Augšupielādējiet produkta sastāva foto (pēc izvēles)")
+    ],
+    outputs=gr.Textbox(label="Produkta analīze", lines=25),
+    title="Kosmētikas produkta analizētājs",
+    description="Ievadiet sastāvu vai augšupielādējiet foto, norādiet ādas tipu, grūtniecību un alergēnus."
+)
+
+iface.launch()
